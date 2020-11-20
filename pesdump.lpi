@@ -7,28 +7,41 @@
         <MainUnitHasCreateFormStatements Value="False"/>
         <MainUnitHasTitleStatement Value="False"/>
         <MainUnitHasScaledStatement Value="False"/>
+        <CompatibilityMode Value="True"/>
       </Flags>
       <SessionStorage Value="InProjectDir"/>
       <Title Value="pesdump"/>
       <UseAppBundle Value="False"/>
       <ResourceType Value="res"/>
     </General>
-    <BuildModes>
-      <Item Name="Default" Default="True"/>
+    <i18n>
+      <EnableI18N LFM="False"/>
+    </i18n>
+    <BuildModes Count="1">
+      <Item1 Name="Default" Default="True"/>
     </BuildModes>
     <PublishOptions>
       <Version Value="2"/>
-      <UseFileFilters Value="True"/>
     </PublishOptions>
     <RunParams>
+      <local>
+        <CommandLineParams Value="/home/markMLl/milwards/rotated.pes"/>
+      </local>
       <FormatVersion Value="2"/>
+      <Modes Count="1">
+        <Mode0 Name="default">
+          <local>
+            <CommandLineParams Value="/home/markMLl/milwards/rotated.pes"/>
+          </local>
+        </Mode0>
+      </Modes>
     </RunParams>
-    <Units>
-      <Unit>
+    <Units Count="1">
+      <Unit0>
         <Filename Value="pesdump.lpr"/>
         <IsPartOfProject Value="True"/>
         <UnitName Value="PesDump"/>
-      </Unit>
+      </Unit0>
     </Units>
   </ProjectOptions>
   <CompilerOptions>
@@ -52,26 +65,12 @@
         <OverflowChecks Value="True"/>
         <StackChecks Value="True"/>
       </Checks>
-      <VerifyObjMethodCallValidity Value="True"/>
     </CodeGeneration>
     <Other>
       <ExecuteAfter>
-        <Command Value="/bin/sh -c date"/>
+        <Command Value="date"/>
         <CompileReasons Run="False"/>
       </ExecuteAfter>
     </Other>
   </CompilerOptions>
-  <Debugging>
-    <Exceptions>
-      <Item>
-        <Name Value="EAbort"/>
-      </Item>
-      <Item>
-        <Name Value="ECodetoolError"/>
-      </Item>
-      <Item>
-        <Name Value="EFOpenError"/>
-      </Item>
-    </Exceptions>
-  </Debugging>
 </CONFIG>

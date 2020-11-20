@@ -58,7 +58,7 @@ program PesDump;
 {$mode objfpc}{$H+}
 
 uses
-  Classes, SysUtils, StrUtils;
+  Classes, SysUtils;
 
 { define ERROR2 }                       (* Extra parser error messages          *)
 
@@ -100,13 +100,17 @@ var
 (* trace of the rules that got here.                                            *)
 
 const
-(* Note: this character might be contentious with old FPC etc. versions that
+(* Note: these characters might be contentious with old FPC etc. versions that
   aren't happy with UTF-8.
 *)
 {$ifndef VER3 }
   dot= '.';
+  arrow= '->';
+  up= '^';
 {$else        }
   dot= '·';
+  arrow= '→';
+  up= '↑';
 {$endif VER3  }
 
 
@@ -209,6 +213,25 @@ var
   lines, i, j, charsOutput: integer;
   chars: string;
 
+
+  (* Convert a byte into 0/1 bits, LSB first. Note that IntToBin() does this
+    MSB first.
+  *)
+  function byteToStr(b: byte; bits: integer): string;
+
+  begin
+    result := '';
+    while bits > 0 do begin
+      if Odd(b) then
+        result += '1'
+      else
+        result += '0';
+      b := b >> 1;
+      bits -= 1
+    end
+  end { byteToStr } ;
+
+
 begin
   for i := 1 to 7 + (3 * bytes) + 1 do
     chars += ' ';
@@ -226,7 +249,7 @@ begin
       if j >= traceBytes then
         break;
       Write(hex3(trace[bytes * i + j], pad(j, bytes))); (* Two digits plus padding *)
-      chars += IntToBin(trace[bytes * i + j], 8);
+      chars += byteToStr(trace[bytes * i + j], 8);
       charsOutput += 3;
     end;
     while charsOutput < (7 + 3 * bytes + 1) do begin
@@ -899,16 +922,6 @@ end { peekRule } ;
 *)
 procedure header;
 
-const
-(* Note: this character might be contentious with old FPC etc. versions that
-  aren't happy with UTF-8.
-*)
-{$ifndef VER3 }
-  arrow= '->';
-{$else        }
-  arrow= '→';
-{$endif VER3  }
-
 var
   i: integer;
   hdr, underline: string;
@@ -984,6 +997,7 @@ var
 function pec_stitchListSubsection(): boolean;
 
 var
+  backtrack: int64;
   count: integer;
   stitch: pecStitch;
   x: longint= 0;
@@ -992,6 +1006,7 @@ var
 begin
   result := false;
   pushRule('pec_stitchListSubsection');
+  backtrack := FilePos(pes);
   header;
   stitch := readQ();
   count := 1;
@@ -1042,7 +1057,7 @@ begin
     count += 1
   end;
   WriteLn('End of stitch sequence');
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pec_stitchListSubsection } ;
 
@@ -1052,22 +1067,25 @@ end { pec_stitchListSubsection } ;
 function pec_thumbnailImageSubsection(): boolean;
 
 var
+  backtrack: int64;
   i: integer;
 
 begin
   result := false;
   pushRule('pec_thumbnailImageSubsection');
+  backtrack := FilePos(pes);
   header;
   if FilePos(pes) <> pecThumbnailByteOffset then begin
     WriteLn('*** In ', peekRule(), ': thumbnail image isn''t contiguous with stitchlist');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   for i := 0 to thumbnailColours do begin
     WriteLn('Thumbnail colour: ', i);
     readU8G(thumbnailWidth, thumbnailHeight)
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pec_thumbnailImageSubsection } ;
 
@@ -1077,21 +1095,25 @@ end { pec_thumbnailImageSubsection } ;
 function pec_header(): boolean;
 
 var
+  backtrack: int64;
   i, v: integer;
 
 begin
   result := false;
   pushRule('pec_header');
+  backtrack := FilePos(pes);
   header;
   if readN(3) <> 'LA:' then begin
     WriteLn('*** In ', peekRule(), ': bad PEC magic number');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   readN(16);
   if readN(1) <> #$0d then begin
     WriteLn('*** In ', peekRule(), ': bad PEC name termination');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   readU8N(12);
@@ -1109,7 +1131,7 @@ begin
     WriteLn('Thumbnail colour ', i, ': ', v)
   end;
   readU8N(462 - (thumbnailColours - 1));
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pec_header } ;
 
@@ -1119,15 +1141,18 @@ end { pec_header } ;
 function pec_body(): boolean;
 
 var
+  backtrack: int64;
   v, width, height: integer;
 
 begin
   result := false;
   pushRule('pec_body');
+  backtrack := FilePos(pes);
   header;
   if FilePos(pes) <> pecSectionByteOffset + 512 then begin
     WriteLn('*** In ', peekRule(), ': bad PEC header padding length');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   readS16();
@@ -1144,17 +1169,19 @@ begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   if not pec_thumbnailImageSubsection() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pec_body } ;
 
@@ -1163,25 +1190,31 @@ end { pec_body } ;
 *)
 function pec_part(): boolean;
 
+var
+  backtrack: int64;
+
 begin
   result := false;
   pushRule('pec_part');
+  backtrack := FilePos(pes);
   header;
   if not pec_header() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   if not pec_body() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pec_part } ;
 
@@ -1190,15 +1223,19 @@ end { pec_part } ;
 *)
 function pec_addendum(): boolean;
 
+var
+  backtrack: int64;
+
 begin
   result := false;
-  pushRule('pec_part');
+  pushRule('pec_addendum');
+  backtrack := FilePos(pes);
   header;
 
 // TODO : Fill this in.
 WriteLn('In pec_addendum, at ', FilePos(pes), ' of total ', FileSize(pes));
 
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pec_addendum } ;
 
@@ -1208,11 +1245,13 @@ end { pec_addendum } ;
 function pes_extents(): boolean;
 
 var
+  backtrack: int64;
   v: integer;
 
 begin
   result := false;
   pushRule('pes_extents');
+  backtrack := FilePos(pes);
   header;
   v := readS16();
   WriteLn('Extents left: ', v);
@@ -1230,7 +1269,7 @@ begin
   WriteLn('Extents right position: ', v);
   v := readS16();
   WriteLn('Extents bottom position: ', v);
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_extents } ;
 
@@ -1240,11 +1279,13 @@ end { pes_extents } ;
 function pes_affineTransform(): boolean;
 
 var
+  backtrack: int64;
   v: single;
 
 begin
   result := false;
   pushRule('pes_affineTransform');
+  backtrack := FilePos(pes);
   header;
   v := readF32();
   WriteLn('Transform scale X: ', v);
@@ -1258,7 +1299,7 @@ begin
   WriteLn('Transform xlate X: ', v);
   v := readF32();
   WriteLn('Transform xlate Y: ', v);
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_affinetransform } ;
 
@@ -1267,25 +1308,31 @@ end { pes_affinetransform } ;
 *)
 function pes_blockGeometry(): boolean;
 
+var
+  backtrack: int64;
+
 begin
   result := false;
   pushRule('pes_blockGeometry');
+  backtrack := FilePos(pes);
   header;
   if not pes_extents() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   if not pes_affineTransform() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_blockGeometry } ;
 
@@ -1296,17 +1343,20 @@ end { pes_blockGeometry } ;
 function pes_embOne(): boolean;
 
 var
+  backtrack: int64;
   i, v: integer;
 
 begin
   result := false;
   pushRule('pes_embOne');
+  backtrack := FilePos(pes);
   header;
   if not pes_blockGeometry() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   v := readU16();                       (* Annotated as "'1' (typical)"         *)
@@ -1327,16 +1377,18 @@ begin
   v := readU16();
   if v <> $ffff then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (1)');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   v := readU16();
   if v <> $0000 then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (2)');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_embOne } ;
 
@@ -1346,6 +1398,7 @@ end { pes_embOne } ;
 function pes_sewSegStitchList(): boolean;
 
 var
+  backtrack: int64;
   i, t, v, x, y: integer;
 {$ifdef FPC }
   stitch: smallintarray;
@@ -1354,6 +1407,7 @@ var
 begin
   result := false;
   pushRule('pes_sewSegStitchList');
+  backtrack := FilePos(pes);
   header;
   t := readU16();
   Write('Stitch type: ');
@@ -1400,7 +1454,7 @@ begin
     end;
     countPesStitchesTotal += 1
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_sewSegStitchList } ;
 
@@ -1410,18 +1464,20 @@ end { pes_sewSegStitchList } ;
 function pes_sewSegColorList(): boolean;
 
 var
+  backtrack: int64;
   v: integer;
 
 begin
   result := false;
   pushRule('pes_sewSegColorList');
+  backtrack := FilePos(pes);
   header;
   v := readU16();
   WriteLn('Block index of change: ', v);
   v := readU16();
   WriteLn('Thread palette/index: ', v);
   countPesColours += 1;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_sewSegColorList } ;
 
@@ -1431,6 +1487,7 @@ end { pes_sewSegColorList } ;
 function pes_sewSegSegmentBlock(): boolean;
 
 var
+  backtrack: int64;
   v: integer;
 
 
@@ -1450,13 +1507,15 @@ var
 begin
   result := false;
   pushRule('pes_sewSegSegmentBlock');
+  backtrack := FilePos(pes);
   header;
   repeat
     if not pes_sewSegStitchList() then begin
 {$ifdef ERROR2 }
       WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-      popRule();
+      WriteLn(up + 'Backtrack ', popRule());
+      Seek(pes, backtrack);
       exit
     end;
     v := readU16();
@@ -1466,11 +1525,12 @@ begin
 {$ifdef ERROR2 }
       WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-      popRule();
+      WriteLn(up + 'Backtrack ', popRule());
+      Seek(pes, backtrack);
       exit
     end else
       v -= 1;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_sewSegSegmentBlock } ;
 
@@ -1480,18 +1540,23 @@ end { pes_sewSegSegmentBlock } ;
 *)
 function pes_sewSeg(): boolean;
 
+var
+  backtrack: int64;
+
 begin
   result := false;
   pushRule('pes_sewSeg');
+  backtrack := FilePos(pes);
   header;
   if not pes_sewSegSegmentBlock() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_sewSeg } ;
 
@@ -1543,11 +1608,13 @@ end { pes_embNText } ;
 function pes_body(): boolean;
 
 var
+  backtrack: int64;
   s: string;
 
 begin
   result := false;
   pushRule('pes_body');
+  backtrack := FilePos(pes);
   header;
   while not Eof(pes) do begin
     if FilePos(pes) = pecSectionByteOffset then begin
@@ -1556,7 +1623,8 @@ begin
 {$ifdef ERROR2 }
         WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-        popRule();
+        WriteLn(up + 'Backtrack ', popRule());
+        Seek(pes, backtrack);
         exit
       end;
       if FilePos(pes) <> FileSize(pes) then
@@ -1564,7 +1632,8 @@ begin
 {$ifdef ERROR2 }
           WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-          popRule();
+          WriteLn(up + 'Backtrack ', popRule());
+          Seek(pes, backtrack);
           exit
         end
     end else begin
@@ -1580,14 +1649,16 @@ begin
 {$ifdef ERROR2 }
                         WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-                        popRule();
+                        WriteLn(up + 'Backtrack ', popRule());
+                        Seek(pes, backtrack);
                         exit
                       end;
         'CSewSeg':    if not pes_sewSeg() then begin
 {$ifdef ERROR2 }
                         WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-                        popRule();
+                        WriteLn(up + 'Backtrack ', popRule());
+                        Seek(pes, backtrack);
                         exit
                       end;
         'CEmbCirc':   exit(false); // Placeholder
@@ -1598,12 +1669,13 @@ begin
         'CEmbNText':  exit(false) // Placeholder
       otherwise
         WriteLn('*** In ', peekRule(), ': unknown section type ', s);
-        popRule();
+        WriteLn(up + 'Backtrack ', popRule());
+        Seek(pes, backtrack);
         exit
       end
     end
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_body } ;
 
@@ -1613,21 +1685,24 @@ end { pes_body } ;
 function pes_hoopsize(): boolean;
 
 var
+  backtrack: int64;
   width, height: word;
 
 begin
   result := false;
   pushRule('pes_hoopsize');
+  backtrack := FilePos(pes);
   header;
   width := readU16();
   height := readU16();
   WriteLn('Hoop size: ', width, 'x', height, 'mm');
   if (width > 1000) or (height > 1000) then begin
     WriteLn('*** In ', peekRule(), ': hoop size is unreasonably large');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_hoopsize } ;
 
@@ -1637,11 +1712,13 @@ end { pes_hoopsize } ;
 function pes_header_1x0(): boolean;
 
 var
+  backtrack: int64;
   v: integer;
 
 begin
   result := false;
   pushRule('pes_header_1x0');
+  backtrack := FilePos(pes);
   header;
   pecSectionByteOffset := readU32();
   WriteLn('Absolute PEC section byte offset: 0x', hex6(pecSectionByteOffset, ''));
@@ -1674,16 +1751,18 @@ begin
   v := readU16();
   if v <> $ffff then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (1)');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
   v := readU16();
   if v <> $0000 then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (2)');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_header_1x0 } ;
 
@@ -1765,19 +1844,22 @@ end { pes_header_6x0 } ;
 function pes_header(): boolean;
 
 var
+  backtrack: int64;
   s: string;
 
 begin
   result := false;
   pushRule('pes_header');
+  backtrack := FilePos(pes);
   header;
 
 (* Read four bytes. If these aren't correct then it can't be a valid header.    *)
 
   s := readN(4);
   if s <> '#PES' then begin
-    WriteLn('Bad header signature "', s, '"');
-    popRule;
+    WriteLn('Bad PES header signature "', s, '"');
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
 
@@ -1798,10 +1880,11 @@ begin
     '0006': result := pes_header_6x0()
   otherwise
     WriteLn('*** In ', peekRule(), ': bad header version "', s, '"');
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_header } ;
 
@@ -1813,36 +1896,79 @@ end { pes_header } ;
 *)
 function pes_file(): boolean;
 
+var
+  backtrack: int64;
+
 begin
   result := false;
   pushRule('pes_file');
+  backtrack := FilePos(pes);
   header;
   if not pes_header() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit;
   end;
   if not pes_body() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
-    popRule();
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
     exit
   end;
-  popRule();
+  WriteLn(up + 'OK ', popRule());
   result := true
 end { pes_file } ;
 
 
-// TODO : Standalone PEC support.
-// Need a rule pes_or_pec_file, that reads the first four bytes of the file and
-// depending on whether it finds #PES or #PEC invokes either pes_file or a so-
-// far unwritten pec_file rule. pes_file expects a PES header starting with 0001
-// etc., pec_file expects 0001 as padding and then goes directly to the existing
-// pec_header starting with LA: etc. This is not coded yet, since I do not have
-// a standalone PEC file against which I can test it.
+(* Recognise a PEC magic number and if found assume it's a "naked" PEC file.
+*)
+function pec_file(): boolean;
+
+// TODO : Naked PEC files untested.
+// TODO : Backtracking on rule failure untested.
+
+var
+  backtrack: int64;
+  s: string;
+
+begin
+  result := false;
+  pushRule('pec_file');
+  backtrack := FilePos(pes);
+  header;
+  s := readN(8);
+  if s <> '#PEC0001' then begin
+    WriteLn('Bad PEC header signature "', s, '"');
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
+    exit
+  end;
+  waitingForPec := false;
+  if not pec_part() then begin
+{$ifdef ERROR2 }
+    WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
+{$endif ERROR2 }
+    WriteLn(up + 'Backtrack ', popRule());
+    Seek(pes, backtrack);
+    exit
+  end;
+  if FilePos(pes) <> FileSize(pes) then
+    if not pec_addendum() then begin
+{$ifdef ERROR2 }
+      WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
+{$endif ERROR2 }
+      WriteLn(up + 'Backtrack ', popRule());
+      Seek(pes, backtrack);
+      exit
+    end;
+  WriteLn(up + 'OK ', popRule());
+  result := true
+end { pec_file } ;
 
 
 (********************************************************************************)
@@ -1874,7 +2000,6 @@ end { helpMe } ;
 function openInput(const fn: string): boolean;
 
 begin
-  testUnpackStitch;                     (* Fails by assertion on error          *)
 {$push }
 {$i- }
   AssignFile(pes, fn);
@@ -1937,6 +2062,7 @@ end { counters } ;
 
 
 begin
+  testUnpackStitch;                     (* Fails by assertion on error          *)
   if ParamCount() = 0 then begin
     helpMe;
     Halt(1)
@@ -1965,7 +2091,7 @@ begin
   ruleStack := TStringList.Create;
   try
     try
-      if pes_file() then begin
+      if pes_file() or pec_file() then begin
         summarise(true);                (* File parsed OK, rule stack empty     *)
         counters
       end else begin
