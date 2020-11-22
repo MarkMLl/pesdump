@@ -1929,9 +1929,6 @@ end { pes_file } ;
 *)
 function pec_file(): boolean;
 
-// TODO : Naked PEC files untested.
-// TODO : Backtracking on rule failure untested.
-
 var
   backtrack: int64;
   s: string;
@@ -1948,6 +1945,7 @@ begin
     Seek(pes, backtrack);
     exit
   end;
+  pecSectionByteOffset := FilePos(pes);
   waitingForPec := false;
   if not pec_part() then begin
 {$ifdef ERROR2 }

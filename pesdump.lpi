@@ -25,13 +25,13 @@
     </PublishOptions>
     <RunParams>
       <local>
-        <CommandLineParams Value="/home/markMLl/milwards/rotated.pes"/>
+        <CommandLineParams Value="/usr/local/src/embroidery-parser/trunk/pesdump/../sampler.pec"/>
       </local>
       <FormatVersion Value="2"/>
       <Modes Count="1">
         <Mode0 Name="default">
           <local>
-            <CommandLineParams Value="/home/markMLl/milwards/rotated.pes"/>
+            <CommandLineParams Value="/usr/local/src/embroidery-parser/trunk/pesdump/../sampler.pec"/>
           </local>
         </Mode0>
       </Modes>
