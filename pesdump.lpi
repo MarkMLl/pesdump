@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CONFIG>
   <ProjectOptions>
-    <Version Value="12"/>
+    <Version Value="11"/>
     <General>
       <Flags>
         <MainUnitHasCreateFormStatements Value="False"/>
         <MainUnitHasTitleStatement Value="False"/>
-        <MainUnitHasScaledStatement Value="False"/>
-        <CompatibilityMode Value="True"/>
       </Flags>
       <SessionStorage Value="InProjectDir"/>
+      <MainUnit Value="0"/>
       <Title Value="pesdump"/>
       <UseAppBundle Value="False"/>
       <ResourceType Value="res"/>
@@ -25,13 +24,13 @@
     </PublishOptions>
     <RunParams>
       <local>
-        <CommandLineParams Value="/usr/local/src/embroidery-parser/trunk/pesdump/../sampler.pec"/>
+        <CommandLineParams Value="../sampler.pes sampler.out"/>
       </local>
       <FormatVersion Value="2"/>
       <Modes Count="1">
         <Mode0 Name="default">
           <local>
-            <CommandLineParams Value="/usr/local/src/embroidery-parser/trunk/pesdump/../sampler.pec"/>
+            <CommandLineParams Value="../sampler.pes sampler.out"/>
           </local>
         </Mode0>
       </Modes>
@@ -59,13 +58,11 @@
       </SyntaxOptions>
     </Parsing>
     <CodeGeneration>
-      <Checks>
-        <IOChecks Value="True"/>
-        <RangeChecks Value="True"/>
-        <OverflowChecks Value="True"/>
-        <StackChecks Value="True"/>
-      </Checks>
+      <SmartLinkUnit Value="True"/>
     </CodeGeneration>
+    <Linking>
+      <LinkSmart Value="True"/>
+    </Linking>
     <Other>
       <ExecuteAfter>
         <Command Value="date"/>

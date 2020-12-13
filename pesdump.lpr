@@ -58,7 +58,23 @@ program PesDump;
 {$mode objfpc}{$H+}
 
 uses
-  Classes, SysUtils;
+  Classes, SysUtils,
+  StrUtils, DateUtils;                  (* These units are optional             *)
+
+(* If FPC version 3.2.0 or later is used, it is able to validate that error     *)
+(* messages correctly identify what function was being executed at the time:    *)
+(* this is important since it includes parsing rules where an error indicates   *)
+(* either something wrong in the input file or a flaw in the program. Versions  *)
+(* of FPC predating 2.2.4 lack the FPC_FULLVERSION predefined, so cannot fail   *)
+(* gracefully when they try to determine whether the CURRENTROUTINE expansion   *)
+(* is available. Other factors mandate that in practice FPC older than 2.6.0    *)
+(* will be unable to compile this source file without modification.             *)
+
+{$undef HAS_CURRENTROUTINE    }
+{$if FPC_FULLVERSION > 030200 }         (* Requires FPC 2.2.4 minimum           *)
+{$define HAS_CURRENTROUTINE   }         (* Requires FPC 3.2.0 minimum           *)
+{$assertions                  }         (* Make sure name checks are operative  *)
+{$endif FPC_FULLVERSION       }
 
 { define ERROR2 }                       (* Extra parser error messages          *)
 
@@ -66,6 +82,7 @@ uses
 
 const
   traceTop= (1024 * 1024) - 1;
+  notOpen= 0;                           (* Handle value for output file checks  *)
 
 {$ifdef FPC }
 type
@@ -82,12 +99,37 @@ type
              end;
 
 var
-  pes: file;
+  params: TStringList= nil;
+  optionTrimToPause: boolean= false;
+  optionTrimToChange: boolean= false;
+  hasOptions: boolean= false;
+  hasCommands: boolean= false;
+  pesIn, pesOut: file;
   ruleStack: TStringList;
   poppedRule: string= '[Empty]';
   traceStart, traceBytes: longint;
   trace: array[0..traceTop] of byte;
 
+(* Counters and min/max sizes output at program termination.                    *)
+
+  countPesStitchesNormal: longword= 0;
+  countPesStitchesJump: longword= 0;
+  countPesStitchesOther: longword= 0;
+  countPesStitchesTotal: longword= 0;
+  countPesColours: longword= 0;
+  minPesX: longint= 0;
+  maxPesX: longint= 0;
+  minPesY: longint= 0;
+  maxPesY: longint= 0;
+  countPecHalfstitches: longword= 0;
+  countPecPauseCommands: longword= 0;
+  countPecTrimCommands: longword= 0;
+  countPecJumpCommands: longword= 0;
+  minPecX: longint= 0;
+  maxPecX: longint= 0;
+  minPecY: longint= 0;
+  maxPecY: longint= 0;
+  countPecColourChanges: longword= 0;
 
 (********************************************************************************)
 (*                                                                              *)
@@ -97,7 +139,7 @@ var
 
 (* Inspection of a PES file indicates that it is little-endian. Exceptions      *)
 (* raised in these functions are assumed to be fatal, and to result in a back-  *)
-(* trace of the rules that got here.                                            *)
+(* trace of the rules that got us here.                                         *)
 
 const
 (* Note: these characters might be contentious with old FPC etc. versions that
@@ -105,13 +147,19 @@ const
 *)
 {$ifndef VER3 }
   dot= '.';
-  arrow= '->';
-  up= '^';
+  arrow= ' -> ';
+  up= '^ ';
 {$else        }
   dot= '·';
-  arrow= '→';
-  up= '↑';
+  arrow= ' → ';
+  up= '↑ ';
 {$endif VER3  }
+
+(* The banner matches address + 16 hex bytes + padding but should optimise to a
+  length if StrUtils is imported, other underlines match the text with which
+  they're associated.
+*)
+  banner= '========================================================';
 
 
 (* Assuming 16 bytes per row of hex bytes, mark the middle.
@@ -194,6 +242,10 @@ begin
       chars += safeChar(trace[bytes * i + j]);
       charsOutput += 3;
     end;
+
+(* Assuming 16 bytes expressed as hex, the address + bytes + padding will match *)
+(* the === banner used to separate major sections of output.                    *)
+
     while charsOutput < (7 + 3 * bytes + 1) do begin
       Write(' ');
       charsOutput += 1
@@ -207,7 +259,91 @@ begin
 end { doneReadHexAscii } ;
 
 
-procedure doneReadHexPbm(width, height: integer; bytes: integer= 8);
+var
+  (* Optional thumbnail colours from the PEC header. These are not necessarily the
+    same as the expected thread colours.
+  *)
+  thumbnailColourMap: array[0..255] of integer;
+
+
+(* These believed to be from a Brother Innovis 955.
+*)
+function colourName(index: integer): string;
+
+begin
+  case index of
+    0:  result := 'Zero';
+    1:  result := 'Prussian Blue';
+    2:  result := 'Blue';
+    3:  result := 'Teal Green';
+    4:  result := 'Corn Flower Blue';
+    5:  result := 'Red';
+    6:  result := 'Reddish Brown';
+    7:  result := 'Magenta';
+    8:  result := 'Light Lilac';
+    9:  result := 'Lilac';
+    10: result := 'Mint Green';
+    11: result := 'Deep Gold';
+    12: result := 'Orange';
+    13: result := 'Yellow';
+    14: result := 'Lime Green';
+    15: result := 'Brass';
+    16: result := 'Silver';
+    17: result := 'Russet Brown';
+    18: result := 'Cream Brown';
+    19: result := 'Pewter';
+    20: result := 'Black';
+    21: result := 'Ultramarine';
+    22: result := 'Royal Purple';
+    23: result := 'Dark Gray';
+    24: result := 'Dark Brown';
+    25: result := 'Deep Rose';
+    26: result := 'Light Brown';
+    27: result := 'Salmon Pink';
+    28: result := 'Vermilion';
+    29: result := 'White';
+    30: result := 'Violet';
+    31: result := 'Seacrest';
+    32: result := 'Sky Blue';
+    33: result := 'Pumpkin';
+    34: result := 'Cream Yellow';
+    35: result := 'Khaki';              (* How did this get to be #feca15?      *)
+    36: result := 'Clay Brown';
+    37: result := 'Leaf Green';
+    38: result := 'Peacock Blue';
+    39: result := 'Gray';
+    40: result := 'Warm Gray';
+    41: result := 'Dark Olive';
+    42: result := 'Linen';
+    43: result := 'Pink';
+    44: result := 'Deep Green';
+    45: result := 'Lavender';
+    46: result := 'Wisteria Violet';
+    47: result := 'Beige';
+    48: result := 'Carmine';
+    49: result := 'Amber Red';
+    50: result := 'Olive Green';
+    51: result := 'Dark Fuchsia';
+    52: result := 'Tangerine';
+    53: result := 'Light Blue';
+    54: result := 'Emerald Green';
+    55: result := 'Purple';
+    56: result := 'Moss Green';
+    57: result := 'Flesh Pink';
+    58: result := 'Harvest Gold';
+    59: result := 'Electric Blue';
+    60: result := 'Lemon Yellow';
+    61: result := 'Fresh Green';
+    62: result := 'Applique Material';
+    63: result := 'Applique Position';
+    64: result := 'Applique'
+  otherwise
+    result := ''
+  end
+end { colourName } ;
+
+
+procedure doneReadHexPbm(width, height, index: integer; bytes: integer= 8);
 
 var
   lines, i, j, charsOutput: integer;
@@ -236,6 +372,12 @@ begin
   for i := 1 to 7 + (3 * bytes) + 1 do
     chars += ' ';
   WriteLn(chars, '|P1');
+  Write(chars, '|# Thumbnail ', index);
+  if (index <= 255) and (thumbnailColourMap[index] <> -1) then
+    WriteLn(', colour ', thumbnailColourMap[index], ' (',
+                                colourName(thumbnailColourMap[index]), ')')
+  else
+    WriteLn;
   WriteLn(chars, '|', width, ' ', height);
   lines := traceBytes div bytes;
   for i := 0 to lines do begin
@@ -444,18 +586,37 @@ end { doneRead } ;
 *)
 function readU8(): byte;
 
+const
+  thisName= 'readU8()';
+
 var
-  myError: string;
+  buffer: byte;
   r: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
   Assert(SizeOf(result) = 1, 'Internal error: bad U8 size');
-  myError := 'In readU8(), unexpected EOF';
-  startRead(FilePos(pes));
-  BlockRead(pes, result, sizeOf(result), r);
-  if r <> sizeOf(result) then
-    raise Exception.Create(myError);
-  doneRead(result)
+  startRead(FilePos(pesIn));
+  BlockRead(pesIn, buffer, sizeOf(buffer), r);
+  if r <> sizeOf(buffer) then
+    raise Exception.Create('In ' + thisName + ', unexpected EOF');
+  result := buffer;
+  doneRead(buffer);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+    BlockWrite(pesOut, buffer, sizeOf(buffer), r);
+    if r <> sizeOf(buffer) then
+      raise Exception.Create('In ' + thisName + ', write error')
+  end
 end { readU8 } ;
 
 
@@ -463,20 +624,37 @@ end { readU8 } ;
 *)
 function readU16(): word;
 
+const
+  thisName= 'readU16()';
+
 var
-  myError: string;
   buffer: word;
   r: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
   Assert(SizeOf(result) = 2, 'Internal error: bad U16 size');
-  myError := 'In readU16(), unexpected EOF';
-  startRead(FilePos(pes));
-  BlockRead(pes, buffer, SizeOf(result), r);
+  startRead(FilePos(pesIn));
+  BlockRead(pesIn, buffer, SizeOf(result), r);
   if r <> SizeOf(result) then
-    raise Exception.Create(myError);
+    raise Exception.Create('In ' + thisName + ', unexpected EOF');
   result := LEtoN(buffer);
-  doneRead(buffer)
+  doneRead(buffer);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+    BlockWrite(pesOut, buffer, sizeOf(buffer), r);
+    if r <> sizeOf(buffer) then
+      raise Exception.Create('In ' + thisName + ', write error')
+  end
 end { readU16 } ;
 
 
@@ -484,20 +662,37 @@ end { readU16 } ;
 *)
 function readS16(): smallint;
 
+const
+  thisName= 'readS16()';
+
 var
-  myError: string;
   buffer: smallint;
   r: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
   Assert(SizeOf(result) = 2, 'Internal error: bad S16 size');
-  myError := 'In readS16(), unexpected EOF';
-  startRead(FilePos(pes));
-  BlockRead(pes, buffer, SizeOf(result), r);
+  startRead(FilePos(pesIn));
+  BlockRead(pesIn, buffer, SizeOf(result), r);
   if r <> SizeOf(result) then
-    raise Exception.Create(myError);
+    raise Exception.Create('In ' + thisName + ', unexpected EOF');
   result := LEtoN(buffer);
-  doneRead(buffer)
+  doneRead(buffer);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+    BlockWrite(pesOut, buffer, sizeOf(buffer), r);
+    if r <> sizeOf(buffer) then
+      raise Exception.Create('In ' + thisName + ', write error')
+  end
 end { readS16 } ;
 
 
@@ -505,46 +700,85 @@ end { readS16 } ;
 *)
 function readU32(): longword;
 
+const
+  thisName= 'readU32()';
+
 var
-  myError: string;
   buffer: longword;
   r: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
   Assert(SizeOf(result) = 4, 'Internal error: bad U32 size');
-  myError := 'In readU32(), unexpected EOF';
-  startRead(FilePos(pes));
-  BlockRead(pes, buffer, SizeOf(result), r);
+  startRead(FilePos(pesIn));
+  BlockRead(pesIn, buffer, SizeOf(result), r);
   if r <> SizeOf(result) then
-    raise Exception.Create(myError);
+    raise Exception.Create('In ' + thisName + ', unexpected EOF');
   result := LEtoN(buffer);
-  doneRead(buffer)
+  doneRead(buffer);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+    BlockWrite(pesOut, buffer, sizeOf(buffer), r);
+    if r <> sizeOf(buffer) then
+      raise Exception.Create('In ' + thisName + ', write error')
+  end
 end { readU32 } ;
 
 
-(* Read a 32-bit float.
+(* Read a 32-bit float. PES files appear to use the standard IEEE format, but
+  this should not be assumed in the general case.
 *)
 function readF32(): single;
 
+const
+  thisName= 'readF32()';
+
+type
+  fixup= record
+           case boolean of
+             false: (l: longword);
+             true:  (s: single)
+           end;
+
 var
-  myError: string;
   r: integer;
-  buffer: record
-            case boolean of
-              false: (l: longword);
-              true:  (s: single)
-            end;
+  buffer: fixup;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
   Assert(SizeOf(result) = 4, 'Internal error: bad F32 size');
-  myError := 'In readF32(), unexpected EOF';
-  startRead(FilePos(pes));
-  BlockRead(pes, buffer.s, SizeOf(result), r);
+  startRead(FilePos(pesIn));
+  BlockRead(pesIn, buffer.s, SizeOf(result), r);
   if r <> SizeOf(result) then
-    raise Exception.Create(myError);
+    raise Exception.Create('In ' + thisName + ', unexpected EOF');
   doneRead(buffer.s);                   (* Dump before in-situ endianness swap  *)
   buffer.l := LEtoN(buffer.l);
-  result := buffer.s
+  result := buffer.s;
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+    buffer.l := NtoLE(buffer.l);
+    BlockWrite(pesOut, buffer, sizeOf(buffer), r);
+    if r <> sizeOf(buffer) then
+      raise Exception.Create('In ' + thisName + ', write error')
+  end
 end { readF32 } ;
 
 
@@ -555,21 +789,38 @@ end { readF32 } ;
 *)
 function readU8N(n: integer): byteArray;
 
+const
+  thisName= 'readU8N()';
+
 var
-  myError: string;
   i, r: integer;
 
 begin
-  myError := 'In readU8N(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   SetLength(result, n);
   if n > 0 then begin
-    BlockRead(pes, result[0], Length(result), r);
+    BlockRead(pesIn, result[0], Length(result), r);
     if r <> Length(result) then
-      raise Exception.Create(myError);
+      raise Exception.Create('In ' + thisName + ', unexpected EOF');
     for i := 0 to Length(result) - 2 do
       dumpRead(result[i]);
-    doneRead(result[Length(result) - 1])
+    doneRead(result[Length(result) - 1]);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+    if TFileRec(pesOut).Handle > notOpen then begin
+      BlockWrite(pesOut, result[0], Length(result), r);
+      if r <> Length(result) then
+        raise Exception.Create('In ' + thisName + ', write error')
+    end
   end
 end { readU8N } ;
 
@@ -579,21 +830,38 @@ end { readU8N } ;
 *)
 function readU16N(n: integer): wordArray;
 
+const
+  thisName= 'readU16N()';
+
 var
-  myError: string;
   i, r: integer;
 
 begin
-  myError := 'In readU16N(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   SetLength(result, n);
   if n > 0 then begin
-    BlockRead(pes, result[0], Length(result) * 2, r);
+    BlockRead(pesIn, result[0], Length(result) * 2, r);
     if r <> Length(result) * 2 then
-      raise Exception.Create(myError);
+      raise Exception.Create('In ' + thisName + ', unexpected EOF');
     for i := 0 to Length(result) - 2 do
       dumpRead(result[i]);
-    doneRead(result[Length(result) - 1])
+    doneRead(result[Length(result) - 1]);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+    if TFileRec(pesOut).Handle > notOpen then begin
+      BlockWrite(pesOut, result[0], Length(result) * 2, r);
+      if r <> Length(result) * 2 then
+        raise Exception.Create('In ' + thisName + ', write error')
+    end
   end
 end { readU16N } ;
 
@@ -603,21 +871,38 @@ end { readU16N } ;
 *)
 function readS16N(n: integer): smallintArray;
 
+const
+  thisName= 'readS16N()';
+
 var
-  myError: string;
   i, r: integer;
 
 begin
-  myError := 'In readS16N(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   SetLength(result, n);
   if n > 0 then begin
-    BlockRead(pes, result[0], Length(result) * 2, r);
+    BlockRead(pesIn, result[0], Length(result) * 2, r);
     if r <> Length(result) * 2 then
-      raise Exception.Create(myError);
+      raise Exception.Create('In ' + thisName + ', unexpected EOF');
     for i := 0 to Length(result) - 2 do
       dumpRead(result[i]);
-    doneRead(result[Length(result) - 1])
+    doneRead(result[Length(result) - 1]);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+    if TFileRec(pesOut).Handle > notOpen then begin
+      BlockWrite(pesOut, result[0], Length(result) * 2, r);
+      if r <> Length(result) * 2 then
+        raise Exception.Create('In ' + thisName + ', write error')
+    end
   end
 end { readS16N } ;
 
@@ -627,21 +912,38 @@ end { readS16N } ;
 *)
 function readF32N(n: integer): singleArray;
 
+const
+  thisName= 'readF32N()';
+
 var
-  myError: string;
   i, r: integer;
 
 begin
-  myError := 'In readF32N(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   SetLength(result, n);
   if n > 0 then begin
-    BlockRead(pes, result[0], Length(result) * 4, r);
+    BlockRead(pesIn, result[0], Length(result) * 4, r);
     if r <> Length(result) * 4 then
-      raise Exception.Create(myError);
+      raise Exception.Create('In ' + thisName + ', unexpected EOF');
     for i := 0 to Length(result) - 2 do
       dumpRead(result[i]);
-    doneRead(result[Length(result) - 1])
+    doneRead(result[Length(result) - 1]);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+    if TFileRec(pesOut).Handle > notOpen then begin
+      BlockWrite(pesOut, result[0], Length(result) * 4, r);
+      if r <> Length(result) * 4 then
+        raise Exception.Create('In ' + thisName + ', write error')
+    end
   end
 end { readF32N } ;
 
@@ -654,24 +956,41 @@ end { readF32N } ;
   in simple bitmap format and if possible dump it using PNM format rather than
   ASCII.
 *)
-procedure readU8G(width, height: integer);
+procedure readU8G(width, height, index: integer);
+
+const
+  thisName= 'readU8G()';
 
 var
-  myError: string;
   bitmap: byteArray;
   i, r: integer;
 
 begin
-  myError := 'In readU8G(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   SetLength(bitmap, width * height);
   if width * height > 0 then begin
-    BlockRead(pes, bitmap[0], Length(bitmap), r);
+    BlockRead(pesIn, bitmap[0], Length(bitmap), r);
     if r <> Length(bitmap) then
-      raise Exception.Create(myError);
+      raise Exception.Create('In ' + thisName + ', unexpected EOF');
     for i := 0 to Length(bitmap) - 1 do
       dumpRead(bitmap[i]);
-    doneReadHexPbm(width * 8, height, width)
+    doneReadHexPbm(width * 8, height, index, width);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+    if TFileRec(pesOut).Handle > notOpen then begin
+      BlockWrite(pesOut, bitmap[0], Length(bitmap), r);
+      if r <> Length(bitmap) then
+        raise Exception.Create('In ' + thisName + ', write error')
+    end
   end
 end { readU8G } ;
 
@@ -680,19 +999,36 @@ end { readU8G } ;
 *)
 function readN(n: integer= 1): ansistring;
 
+const
+  thisName= 'readN()';
+
 var
-  myError: string;
   r: integer;
 
 begin
-  myError := 'In readN(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   SetLength(result, n);
   if n > 0 then begin
-    BlockRead(pes, result[1], n, r);
+    BlockRead(pesIn, result[1], n, r);
     if r <> n then
-      raise Exception.Create(myError);
-    doneRead(result)
+      raise Exception.Create('In ' + thisName + ', unexpected EOF');
+    doneRead(result);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+    if TFileRec(pesOut).Handle > notOpen then begin
+      BlockWrite(pesOut, result[1], Length(result), r);
+      if r <> Length(result) then
+        raise Exception.Create('In ' + thisName + ', write error')
+    end
   end
 end { readN } ;
 
@@ -702,26 +1038,43 @@ end { readN } ;
 *)
 function readC(): ansistring;
 
+const
+  thisName= 'readC()';
+
 var
-  myError: string;
   n: word;
   r: integer;
 
 begin
-  myError := 'In readC(), unexpected EOF';
-  n := readU16();
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  n := readU16();                       (* Note: handles own output etc.        *)
+  startRead(FilePos(pesIn));
   try
     SetLength(result, n);
     if n > 0 then begin
-      BlockRead(pes, result[1], n, r);
+      BlockRead(pesIn, result[1], n, r);
       if r <> n then
-        raise Exception.Create(myError)
+        raise Exception.Create('In ' + thisName + ', unexpected EOF');
     end
   except
-    raise Exception.Create(myError)
+    raise Exception.Create('In ' + thisName + ', unexpected EOF')
   end;
-  doneRead(result)
+  doneRead(result);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+    BlockWrite(pesOut, result[1], Length(result), r);
+    if r <> Length(result) then
+      raise Exception.Create('In ' + thisName + ', write error')
+  end
 end { readC } ;
 
 
@@ -729,25 +1082,46 @@ end { readC } ;
 *)
 function readZ(): ansistring;
 
+const
+  thisName= 'readZ()';
+
 var
-  myError: string;
   n: byte;
   r: integer;
 
 begin
-  myError := 'In readZ(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   result := '';
-  BlockRead(pes, n, 1, r);
+  BlockRead(pesIn, n, 1, r);
   if r <> 1 then
-    raise Exception.Create(myError);
+    raise Exception.Create('In ' + thisName + ', unexpected EOF');
   while n <> 0 do begin
     result := Chr(n);
-    BlockRead(pes, n, 1, r);
+    BlockRead(pesIn, n, 1, r);
     if r <> 1 then
-      raise Exception.Create(myError)
+      raise Exception.Create('In ' + thisName + ', unexpected EOF')
   end;
-  doneRead(result + #$00)
+  doneRead(result + #$00);
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+    BlockWrite(pesOut, result[1], Length(result), r);
+    if r <> Length(result) then
+      raise Exception.Create('In ' + thisName + ', write error');
+    n := 0;
+    BlockWrite(pesOut, n, 1, r);
+    if r <> 1 then
+      raise Exception.Create('In ' + thisName + ', write error')
+  end
 end { readZ } ;
 
 
@@ -842,33 +1216,94 @@ end { testUnpackStitch } ;
 (* Read either one or two bytes comprising a stitch ordinate (signed) and
   optional command bits masked into a separate byte.
 *)
-function readQ(): pecStitch;
+function readQ(stitch: longint; x: boolean): pecStitch;
+
+const
+  thisName= 'readQ()';
 
 var
-  myError: string;
   r: integer;
   b1, b2: byte;                         (* For command and optional ordinate    *)
+  twoBytes: boolean= false;
 
 begin
-  myError := 'In readQ(), unexpected EOF';
-  startRead(FilePos(pes));
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%} + '()', 'Internal error: bad name in ' + {$I %CURRENTROUTINE%} + '()');
+{$endif HAS_CURRENTROUTINE }
+  startRead(FilePos(pesIn));
   result.command := $ff;                (* Defaults to end of sequence          *)
   result.ordinate := 0;
-  BlockRead(pes, b1, 1, r);
+  BlockRead(pesIn, b1, 1, r);
   if r <> 1 then
-    raise Exception.Create(myError);
+    raise Exception.Create('In ' + thisName + ', unexpected EOF');
   dumpRead(b1);
   if b1 <> $ff then begin               (* Not end of sequence                  *)
     result := unpackStitch(false, b1, 0);
     if result.command = $ff then begin  (* Needs second byte                    *)
-      BlockRead(pes, b2, 1, r);
+      BlockRead(pesIn, b2, 1, r);
       if r <> 1 then
-        raise Exception.Create(myError);
+        raise Exception.Create('In ' + thisName + ', unexpected EOF');
       dumpRead(b2);
+      twoBytes := true;
       result := unpackStitch(true, b1, b2)
     end
   end;
-  doneReadHexAscii
+  doneReadHexAscii;
+
+(* The result might be adjusted for endianness, but is always returned without  *)
+(* other modification so that the parser can validate the content of the file.  *)
+(* If any systematic modification is to be done in response to a command-line   *)
+(* option it will affect what is written to a binary output file, but the text  *)
+(* output for user inspection will be unaffected although a comment might be    *)
+(* inserted.                                                                    *)
+
+  if TFileRec(pesOut).Handle > notOpen then begin
+
+(* A trim command is ax xx, optionally convert this to a pause cx xx. Assuming  *)
+(* that a standard PES/PEC file has a trim on both x and y, this tentatively    *)
+(* only changes the second so as not to do a double pause lest the embroidery   *)
+(* chooses to obey both.                                                        *)
+
+(* ***** This turns out to crash an Innovis-97E when loaded.                    *)
+
+    if twoBytes and optionTrimToPause and (b1 and $f0 = $a0) and not x then begin
+      b1 := $c0;
+      b2 := $00;
+      if x then
+        WriteLn('# Trim at ', stitch + Ord(x), ' x rewritten to pause')
+      else
+        WriteLn('# Trim at ', stitch + Ord(x), ' y rewritten to pause')
+    end;
+
+(* Alternatively yry a colour change, although I don't know how safe this is    *)
+(* when there's not an adequate series of prededined colours.                   *)
+
+(* ***** This turns out to crash an Innovis-97E when loaded.                    *)
+
+    if twoBytes and optionTrimToChange and (b1 and $f0 = $a0) then begin
+      if x then begin
+        b1 := $fe;
+        b2 := $b0;
+        WriteLn('# Trim at ', stitch + Ord(x), ' x rewritten to colour change')
+      end else begin
+        b1 := $80;
+        if not Odd(countPecTrimCommands div 2) then
+          b2 := $01
+        else
+          b2 := $02;
+        WriteLn('# Trim at ', stitch + Ord(x), ' y rewritten to dummy parameter')
+      end
+    end;
+
+    BlockWrite(pesOut, b1, 1, r);
+    if r <> 1 then
+      raise Exception.Create('In ' + thisName + ', write error');
+    if twoBytes then begin
+      BlockWrite(pesOut, b2, 1, r);
+      if r <> 1 then
+        raise Exception.Create('In ' + thisName + ', write error')
+    end
+  end
 end { readQ } ;
 
 
@@ -972,49 +1407,51 @@ var
   thumbnailHeight: longword= 0;         (* In rows/pixels                       *)
   thumbnailColours: longword= 0;        (* Zero is 1 colour, 0xff is no colour  *)
 
-  countPesStitchesNormal: longword= 0;
-  countPesStitchesJump: longword= 0;
-  countPesStitchesOther: longword= 0;
-  countPesStitchesTotal: longword= 0;
-  countPesColours: longword= 0;
-  minPesX: longint= 0;
-  maxPesX: longint= 0;
-  minPesY: longint= 0;
-  maxPesY: longint= 0;
-  countPecHalfstitches: longword= 0;
-  countPecPauseCommands: longword= 0;
-  countPecTrimCommands: longword= 0;
-  countPecJumpCommands: longword= 0;
-  minPecX: longint= 0;
-  maxPecX: longint= 0;
-  minPecY: longint= 0;
-  maxPecY: longint= 0;
-  countPecColourChanges: longword= 0;
-
 
 (* Parse the PEC stitchlist section.
 *)
 function pec_stitchListSubsection(): boolean;
 
+const
+  thisName= 'pec_stitchListSubsection';
+
 var
   backtrack: int64;
-  count: integer;
+  count, colour, ignoreOrdinates: integer;
   stitch: pecStitch;
   x: longint= 0;
   y: longint= 0;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pec_stitchListSubsection');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
-  stitch := readQ();
-  count := 1;
+  WriteLn('Colour: [1] ', thumbnailColourMap[1]);
+  count := 0;
+  colour := 1;
+  ignoreOrdinates := 0;
+  stitch := readQ(count div 2 + 1, Odd(count));
   while stitch.command <> $ff do begin
     Write('Stitch ', count div 2 + 1);
-    if (stitch.command = $fe) and (stitch.ordinate = $b0) then begin
-      Write(' colour change,');
-      countPecColourChanges += 1
+
+(* A colour change is documented as two bytes $fe $b0, after they've been       *)
+(* decoded to a command and an ordinate they're $f0 and -336 respectively. What *)
+(* is and what isn't counted as a valid half-stitch here is a bit of a hack but *)
+(* appears to produce the right result when compared with what's in the PES.    *)
+
+// Optimisation/command here: suppress colour change if it's actually the same colour.
+
+    if (stitch.command = { $fe } $f0) and (stitch.ordinate = { $b0 } -336) then begin
+      Write(' colour change from [', colour, '] ', thumbnailColourMap[colour]);
+      colour += 1;
+      Write(' to [', colour, '] ', thumbnailColourMap[colour], ',');
+      countPecColourChanges += 1;
+      ignoreOrdinates := 2;
+      countPecHalfstitches += 1
     end else begin
       if stitch.command and $40 <> $00 then begin
         Write(' pause,');
@@ -1027,33 +1464,43 @@ begin
       if stitch.command and $10 <> $00 then begin
         Write(' jump,');
         countPecJumpCommands += 1
-      end
+      end;
+      if stitch.command and $60 = $00 then
+        countPecHalfstitches += 1
     end;
-    if Odd(count) then
-      Write(' x: ')
+    if not Odd(count) then              (* Count starts at zero. First (half-)  *)
+      Write(' x: ')                     (* stitch is 1 x, second 1 y, etc.      *)
     else
       Write(' y: ');
-    countPecHalfstitches += 1;
 
-(* The stitch positions are relative so always output a sign.                   *)
+(* The stitch positions are relative so always output a sign. Ignore the        *)
+(* ordinate associated with a colour change, and pragmatically assume that the  *)
+(* next ordinate (i.e. the y associated with the colour change's x) is also to  *)
+(* be ignored although it does appear to be slightly variable (alternating 1    *)
+(* and 2 as mentioned in one of the documents).                                 *)
 
     if stitch.ordinate >= 0 then
       Write('+');
     WriteLn(stitch.ordinate);
-    if Odd(count) then begin
-      x += stitch.ordinate;
-      if x < minPecX then
-        minPecX := x;
-      if x > maxPecX then
-        maxPecX := x
-    end else begin
-      y += stitch.ordinate;
-      if y < minPecY then
-        minPecY := y;
-      if y > maxPecY then
-        maxPecY := y
-    end;
-    stitch := readQ();
+    if ignoreOrdinates = 0 then begin
+      if Odd(count) then begin
+        x += stitch.ordinate;
+//        WriteLn('X absolute ', x);      (* For debugging                        *)
+        if x < minPecX then
+          minPecX := x;
+        if x > maxPecX then
+          maxPecX := x
+      end else begin
+        y += stitch.ordinate;
+//        WriteLn('Y absolute ', y);      (* For debugging                        *)
+        if y < minPecY then
+          minPecY := y;
+        if y > maxPecY then
+          maxPecY := y
+      end
+    end else
+      ignoreOrdinates -= 1;
+    stitch := readQ(count div 2 + 1, Odd(count));
     count += 1
   end;
   WriteLn('End of stitch sequence');
@@ -1066,24 +1513,30 @@ end { pec_stitchListSubsection } ;
 *)
 function pec_thumbnailImageSubsection(): boolean;
 
+const
+  thisName= 'pec_thumbnailImageSubsection';
+
 var
   backtrack: int64;
   i: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pec_thumbnailImageSubsection');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
-  if FilePos(pes) <> pecThumbnailByteOffset then begin
+  if FilePos(pesIn) <> pecThumbnailByteOffset then begin
     WriteLn('*** In ', peekRule(), ': thumbnail image isn''t contiguous with stitchlist');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   for i := 0 to thumbnailColours do begin
     WriteLn('Thumbnail colour: ', i);
-    readU8G(thumbnailWidth, thumbnailHeight)
+    readU8G(thumbnailWidth, thumbnailHeight, i)
   end;
   WriteLn(up + 'OK ', popRule());
   result := true
@@ -1094,26 +1547,32 @@ end { pec_thumbnailImageSubsection } ;
 *)
 function pec_header(): boolean;
 
+const
+  thisName= 'pec_header';
+
 var
   backtrack: int64;
   i, v: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pec_header');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   if readN(3) <> 'LA:' then begin
     WriteLn('*** In ', peekRule(), ': bad PEC magic number');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   readN(16);
   if readN(1) <> #$0d then begin
     WriteLn('*** In ', peekRule(), ': bad PEC name termination');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   readU8N(12);
@@ -1123,12 +1582,16 @@ begin
   thumbnailHeight := readU8();
   WriteLn('Thumbnail height (rows): ', thumbnailHeight);
   readU8N(12);
+  for i := 0 to 255 do
+    thumbnailColourMap[i] := -1;
   thumbnailColours := readU8();
   WriteLn('Thumbnail colours (-1): ', thumbnailColours);
   thumbnailColours := (thumbnailColours + 1) mod 256;
   for i := 0 to thumbnailColours - 1 do begin
     v := readU8();
-    WriteLn('Thumbnail colour ', i, ': ', v)
+    WriteLn('Thumbnail colour ', i, ': ', v, ' (', colourName(v), ')');
+    if i <= 255 then
+      thumbnailColourMap[i] := v
   end;
   readU8N(462 - (thumbnailColours - 1));
   WriteLn(up + 'OK ', popRule());
@@ -1140,19 +1603,25 @@ end { pec_header } ;
 *)
 function pec_body(): boolean;
 
+const
+  thisName= 'pec_body';
+
 var
   backtrack: int64;
   v, width, height: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pec_body');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
-  if FilePos(pes) <> pecSectionByteOffset + 512 then begin
+  if FilePos(pesIn) <> pecSectionByteOffset + 512 then begin
     WriteLn('*** In ', peekRule(), ': bad PEC header padding length');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   readS16();
@@ -1170,7 +1639,7 @@ begin
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   if not pec_thumbnailImageSubsection() then begin
@@ -1178,7 +1647,7 @@ begin
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1190,20 +1659,26 @@ end { pec_body } ;
 *)
 function pec_part(): boolean;
 
+const
+  thisName= 'pec_part';
+
 var
   backtrack: int64;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pec_part');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   if not pec_header() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   if not pec_body() then begin
@@ -1211,7 +1686,7 @@ begin
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1223,17 +1698,23 @@ end { pec_part } ;
 *)
 function pec_addendum(): boolean;
 
+const
+  thisName= 'pec_addendum';
+
 var
   backtrack: int64;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pec_addendum');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
 
 // TODO : Fill this in.
-WriteLn('In pec_addendum, at ', FilePos(pes), ' of total ', FileSize(pes));
+WriteLn('In pec_addendum, at ', FilePos(pesIn), ' of total ', FileSize(pesIn));
 
   WriteLn(up + 'OK ', popRule());
   result := true
@@ -1244,14 +1725,20 @@ end { pec_addendum } ;
 *)
 function pes_extents(): boolean;
 
+const
+  thisName= 'pes_extents';
+
 var
   backtrack: int64;
   v: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_extents');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   v := readS16();
   WriteLn('Extents left: ', v);
@@ -1278,14 +1765,20 @@ end { pes_extents } ;
 *)
 function pes_affineTransform(): boolean;
 
+const
+  thisName= 'pes_affineTransform';
+
 var
   backtrack: int64;
   v: single;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_affineTransform');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   v := readF32();
   WriteLn('Transform scale X: ', v);
@@ -1308,20 +1801,26 @@ end { pes_affinetransform } ;
 *)
 function pes_blockGeometry(): boolean;
 
+const
+  thisName= 'pes_blockGeometry';
+
 var
   backtrack: int64;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_blockGeometry');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   if not pes_extents() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   if not pes_affineTransform() then begin
@@ -1329,7 +1828,7 @@ begin
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1342,21 +1841,27 @@ end { pes_blockGeometry } ;
 *)
 function pes_embOne(): boolean;
 
+const
+  thisName= 'pes_embOne';
+
 var
   backtrack: int64;
   i, v: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_embOne');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   if not pes_blockGeometry() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   v := readU16();                       (* Annotated as "'1' (typical)"         *)
@@ -1378,14 +1883,14 @@ begin
   if v <> $ffff then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (1)');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   v := readU16();
   if v <> $0000 then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (2)');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1397,6 +1902,9 @@ end { pes_embOne } ;
 *)
 function pes_sewSegStitchList(): boolean;
 
+const
+  thisName= 'pes_sewSegStitchList';
+
 var
   backtrack: int64;
   i, t, v, x, y: integer;
@@ -1405,9 +1913,12 @@ var
 {$endif FPC }
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_sewSegStitchList');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   t := readU16();
   Write('Stitch type: ');
@@ -1463,14 +1974,20 @@ end { pes_sewSegStitchList } ;
 *)
 function pes_sewSegColorList(): boolean;
 
+const
+  thisName= 'pes_sewSegColorList';
+
 var
   backtrack: int64;
   v: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_sewSegColorList');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   v := readU16();
   WriteLn('Block index of change: ', v);
@@ -1485,6 +2002,9 @@ end { pes_sewSegColorList } ;
 (* CSewSeg segment block.
 *)
 function pes_sewSegSegmentBlock(): boolean;
+
+const
+  thisName= 'pes_sewSegSegmentBlock';
 
 var
   backtrack: int64;
@@ -1505,9 +2025,12 @@ var
 
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_sewSegSegmentBlock');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   repeat
     if not pes_sewSegStitchList() then begin
@@ -1515,7 +2038,7 @@ begin
       WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
       WriteLn(up + 'Backtrack ', popRule());
-      Seek(pes, backtrack);
+      Seek(pesIn, backtrack);
       exit
     end;
     v := readU16();
@@ -1526,7 +2049,7 @@ begin
       WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
       WriteLn(up + 'Backtrack ', popRule());
-      Seek(pes, backtrack);
+      Seek(pesIn, backtrack);
       exit
     end else
       v -= 1;
@@ -1540,20 +2063,26 @@ end { pes_sewSegSegmentBlock } ;
 *)
 function pes_sewSeg(): boolean;
 
+const
+  thisName= 'pes_sewSeg';
+
 var
   backtrack: int64;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_sewSeg');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   if not pes_sewSegSegmentBlock() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1607,33 +2136,39 @@ end { pes_embNText } ;
 *)
 function pes_body(): boolean;
 
+const
+  thisName= 'pes_body';
+
 var
   backtrack: int64;
   s: string;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_body');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
-  while not Eof(pes) do begin
-    if FilePos(pes) = pecSectionByteOffset then begin
+  while not Eof(pesIn) do begin
+    if FilePos(pesIn) = pecSectionByteOffset then begin
       waitingForPec := false;
       if not pec_part() then begin
 {$ifdef ERROR2 }
         WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
         WriteLn(up + 'Backtrack ', popRule());
-        Seek(pes, backtrack);
+        Seek(pesIn, backtrack);
         exit
       end;
-      if FilePos(pes) <> FileSize(pes) then
+      if FilePos(pesIn) <> FileSize(pesIn) then
         if not pec_addendum() then begin
 {$ifdef ERROR2 }
           WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
           WriteLn(up + 'Backtrack ', popRule());
-          Seek(pes, backtrack);
+          Seek(pesIn, backtrack);
           exit
         end
     end else begin
@@ -1650,7 +2185,7 @@ begin
                         WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
                         WriteLn(up + 'Backtrack ', popRule());
-                        Seek(pes, backtrack);
+                        Seek(pesIn, backtrack);
                         exit
                       end;
         'CSewSeg':    if not pes_sewSeg() then begin
@@ -1658,7 +2193,7 @@ begin
                         WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
                         WriteLn(up + 'Backtrack ', popRule());
-                        Seek(pes, backtrack);
+                        Seek(pesIn, backtrack);
                         exit
                       end;
         'CEmbCirc':   exit(false); // Placeholder
@@ -1670,7 +2205,7 @@ begin
       otherwise
         WriteLn('*** In ', peekRule(), ': unknown section type ', s);
         WriteLn(up + 'Backtrack ', popRule());
-        Seek(pes, backtrack);
+        Seek(pesIn, backtrack);
         exit
       end
     end
@@ -1684,14 +2219,20 @@ end { pes_body } ;
 *)
 function pes_hoopsize(): boolean;
 
+const
+  thisName= 'pes_hoopsize';
+
 var
   backtrack: int64;
   width, height: word;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_hoopsize');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   width := readU16();
   height := readU16();
@@ -1699,7 +2240,7 @@ begin
   if (width > 1000) or (height > 1000) then begin
     WriteLn('*** In ', peekRule(), ': hoop size is unreasonably large');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1711,14 +2252,20 @@ end { pes_hoopsize } ;
 *)
 function pes_header_1x0(): boolean;
 
+const
+  thisName= 'pes_header_1x0';
+
 var
   backtrack: int64;
   v: integer;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_header_1x0');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   pecSectionByteOffset := readU32();
   WriteLn('Absolute PEC section byte offset: 0x', hex6(pecSectionByteOffset, ''));
@@ -1752,14 +2299,14 @@ begin
   if v <> $ffff then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (1)');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   v := readU16();
   if v <> $0000 then begin
     WriteLn('*** In ', peekRule(), ': unexpected padding (2)');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1843,14 +2390,20 @@ end { pes_header_6x0 } ;
 *)
 function pes_header(): boolean;
 
+const
+  thisName= 'pes_header';
+
 var
   backtrack: int64;
   s: string;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_header');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
 
 (* Read four bytes. If these aren't correct then it can't be a valid header.    *)
@@ -1859,7 +2412,7 @@ begin
   if s <> '#PES' then begin
     WriteLn('Bad PES header signature "', s, '"');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
 
@@ -1881,7 +2434,7 @@ begin
   otherwise
     WriteLn('*** In ', peekRule(), ': bad header version "', s, '"');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1896,20 +2449,26 @@ end { pes_header } ;
 *)
 function pes_file(): boolean;
 
+  const
+  thisName= 'pes_file';
+
 var
   backtrack: int64;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pes_file');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   if not pes_header() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit;
   end;
   if not pes_body() then begin
@@ -1917,7 +2476,7 @@ begin
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
   WriteLn(up + 'OK ', popRule());
@@ -1929,39 +2488,45 @@ end { pes_file } ;
 *)
 function pec_file(): boolean;
 
+const
+  thisName= 'pec_file';
+
 var
   backtrack: int64;
   s: string;
 
 begin
+{$ifdef HAS_CURRENTROUTINE }
+  Assert(thisName = {$I %CURRENTROUTINE%}, 'Internal error: bad name in ' + {$I %CURRENTROUTINE%});
+{$endif HAS_CURRENTROUTINE }
   result := false;
-  pushRule('pec_file');
-  backtrack := FilePos(pes);
+  pushRule(thisName);
+  backtrack := FilePos(pesIn);
   header;
   s := readN(8);
   if s <> '#PEC0001' then begin
     WriteLn('Bad PEC header signature "', s, '"');
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
-  pecSectionByteOffset := FilePos(pes);
+  pecSectionByteOffset := FilePos(pesIn);
   waitingForPec := false;
   if not pec_part() then begin
 {$ifdef ERROR2 }
     WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
     WriteLn(up + 'Backtrack ', popRule());
-    Seek(pes, backtrack);
+    Seek(pesIn, backtrack);
     exit
   end;
-  if FilePos(pes) <> FileSize(pes) then
+  if FilePos(pesIn) <> FileSize(pesIn) then
     if not pec_addendum() then begin
 {$ifdef ERROR2 }
       WriteLn('*** In ', peekRule(), ': unable to parse ', poppedRule);
 {$endif ERROR2 }
       WriteLn(up + 'Backtrack ', popRule());
-      Seek(pes, backtrack);
+      Seek(pesIn, backtrack);
       exit
     end;
   WriteLn(up + 'OK ', popRule());
@@ -1983,28 +2548,79 @@ procedure helpMe;
 begin
   WriteLn(ErrOutput, 'PES v1 file parser/dumper. Command line:');
   WriteLn(ErrOutput);
-  WriteLn(ErrOutput, '        pesdump input_file');
+  WriteLn(ErrOutput, '        pesdump [options] input_file [output file]');
   WriteLn(ErrOutput);
   WriteLn(ErrOutput, 'The input file name is mandatory, standard input will not be used if it is omitted.');
+  WriteLn(ErrOutput, 'The output file name is optional, but requred for most options to be effective.');
+  WriteLn(ErrOutput);
+  WriteLn(ErrOutput, 'Options:');
+  WriteLn(ErrOutput);
+  WriteLn(ErrOutput, '  --TrimToPause         Convert trim commands in the PEC section to pause.');
+  WriteLn(ErrOutput, '  --TrimToChange        Convert trim commands to colour changes.');
   WriteLn(ErrOutput)
 end { helpMe } ;
 
 
+(* Display version information to standard error.
+*)
+procedure versionMe;
+
+// This string *SHOULD* be identical to one embedded in the RTL portion of the
+// binary, accessible from 3.2.0 onwards using
+//
+// var
+//   _FPCIdentA: record end external name '__fpc_ident';
+//   FPCIdentA: PChar = @_FPCIdentA;
+
+const
+  FPCIdent= 'FPC ' + {$I %FPCVERSION%} + ' [' + {$I %FPCDATE%} + '] for ' + {$I %FPCTARGETCPU%} + ' - ' + {$I %FPCTARGETOS%};
+
+begin
+  WriteLn(ErrOutput, 'Built using ', FPCIdent);
+  WriteLn(ErrOutput)
+end { versionMe } ;
+
+
 (* If there is a parameter on the command line, attempt to open it as the input
-  file. Otherwise assume that the input is on standard input. Return true if
-  the specified file can be successfully opened, otherwise false which will
-  probably result in help text being output.
+  file. Return true if the specified file can be successfully opened, otherwise
+  false which will probably result in help text being output.
 *)
 function openInput(const fn: string): boolean;
 
 begin
+  if fn = '' then
+    exit(false);
 {$push }
 {$i- }
-  AssignFile(pes, fn);
-  Reset(pes, 1);
+  AssignFile(pesIn, fn);
+  Reset(pesIn, 1);
   result := IOResult = 0
 {$pop  }
 end { openInput } ;
+
+
+function openOutput(const fn: string): boolean;
+
+var
+  scratch: longint;
+
+begin
+  if fn = '' then
+    exit(false);
+  scratch := TFileRec(pesOut).Handle;   (* Visible for debugging                *)
+  {$push }
+  {$i- }
+    AssignFile(pesOut, fn);
+    Rewrite(pesOut, 1);
+    result := IOResult = 0;
+  {$pop  }
+
+(* Check that we can use the handle to determine whether an output file is open *)
+
+  scratch := TFileRec(pesOut).Handle;   (* Visible for debugging                *)
+  Assert(scratch > notOpen, 'Internal error: unexpected output handle');
+  scratch := TFileRec(pesOut).mode
+end { openOutput } ;
 
 
 (* Output what the program can tell us about why it's terminating. This should
@@ -2040,7 +2656,11 @@ end { summarise } ;
 procedure counters;
 
 begin
-  WriteLn('--------------------------------');
+{$if declared(AddChar) }
+  WriteLn(AddChar('=', '', Length(banner)));
+{$else }
+  WriteLn(banner);
+{$endif }
   WriteLn('PES normal stitches: ', countPesStitchesNormal);
   WriteLn('PES jump stitches: ', countPesStitchesJump);
   WriteLn('PES other stitches: ', countPesStitchesOther);
@@ -2049,59 +2669,246 @@ begin
   WriteLn('PES X range: ', minPesX, '..', maxPesX);
   WriteLn('PES Y range: ', minPesY, '..', maxPesY);
   WriteLn('PEC half stitches: ', countPecHalfStitches);
+  Write('PEC total stitches: ');
+  if not Odd(countPecHalfStitches) then
+    WriteLn(countPecHalfStitches div 2)
+  else
+    WriteLn((countPecHalfStitches / 2):3:1);
   WriteLn('PEC pause commands: ', countPecPauseCommands);
   WriteLn('PEC trim commands: ', countPecTrimCommands);
   WriteLn('PEC jump commands: ', countPecJumpCommands);
   WriteLn('PEC X range: ', minPecX, '..', maxPecX);
   WriteLn('PEC Y range: ', minPecY, '..', maxPecY);
   WriteLn('PEC colour changes: ', countPecColourChanges);
-  WriteLn('--------------------------------')
+{$if declared(AddChar) }
+  WriteLn(AddChar('=', '', Length(banner)))
+{$else }
+  WriteLn(banner)
+{$endif }
 end { counters } ;
+
+
+(* Store commandline parameters in a StringList so that options can be removed
+  as they are parsed. The list stores the program name at [0], followed by
+  options and parameters ordered as on the commandline.
+*)
+procedure initParams;
+
+var
+  i: integer;
+
+begin
+  params :=TStringList.Create;
+  for i := 0 to System.ParamCount() do
+    params.Append(System.ParamStr(i))
+end { initParams } ;
+
+
+(* Local redefinition of System.ParamCount(), referring to a StringList. If the
+  list contains the program name and no options or parameters, the result is zero.
+*)
+function paramCount(): integer;
+
+begin
+  if not Assigned(params) then
+    initParams;
+  result := params.Count - 1
+end { paramCount } ;
+
+
+type
+  paramCase= (verbatim, uc, lc);
+
+
+(* Local redefinition of System.ParamCount(), referring to a StringList. The
+  result is blank if out of range.
+*)
+function paramStr(index: integer; forceCase: paramCase= verbatim): AnsiString;
+
+begin
+  result := '';
+  if not Assigned(params) then
+    initParams;
+  if index <= paramCount() then
+    case forceCase of
+      uc: result := UpperCase(params[index]);
+      lc: result := LowerCase(params[index])
+    otherwise
+      result := params[index]
+    end
+end { paramStr } ;
+
+
+(* Remove an entry from the parameters StringList. [0] refers to the program
+  name, which is protected from deletion.
+*)
+procedure paramDel(index: integer);
+
+begin
+  if not Assigned(params) then
+    initParams;
+  if (index >= 1) and (index <= paramCount()) then
+    params.Delete(index)
+end { paramDel } ;
 
 
 begin
   testUnpackStitch;                     (* Fails by assertion on error          *)
-  if ParamCount() = 0 then begin
-    helpMe;
-    Halt(1)
-  end;
+  try
+
+(* Deal with the cases where there are no options/parameters or the options     *)
+(* preclude normal operation.                                                   *)
+
+    if paramCount() = 0 then begin
+      helpMe;
+      Halt(1)
+    end;
 {$ifdef UNIX }
-  if (ParamStr(1)[1] = '-') and         (* Unix/GNU convention is --help        *)
-        (Pos('-help', LowerCase(ParamStr(1))) > 0) then begin
+    if (paramStr(1)[1] = '-') and       (* Unix/GNU convention is --help        *)
+                          (Pos('-help', paramStr(1, lc)) > 0) then begin
 {$else       }
-    if (ParamStr(1) = '/?') or          (* DOS/Windows convention is /help etc. *)
-        (LowerCase(Copy(ParamStr(1), 1, 2)) = '/h') then begin
+      if (paramStr(1) = '/?') or        (* DOS/Windows convention is /help etc. *)
+                          (Copy(paramStr(1, lc), 1, 2) = '/h') then begin
 {$endif UNIX }
-    helpMe;
-    Halt(1)
-  end;
-  if not openInput(ParamStr(1)) then begin
-    WriteLn(ErrOutput);
-    WriteLn(ErrOutput, 'Unable to open input file ', ParamStr(1));
-    helpMe;
-    Halt(1)
-  end;
+      helpMe;
+      Halt(1)
+    end;
+    if paramStr(1, lc) = '--version' then begin
+      versionMe;
+      Halt(1)
+    end;
+    WriteLn('Program: ', paramStr(0));
+
+(* Recognise and delete options which tune normal operation (e.g. convert every *)
+(* trim to a pause), terminating when something which does not start with - or  *)
+(* + is encountered or on an explicit -- . It would be reasonable for an option *)
+(* which resulted in methodical deletions and/or insertions to be mutually      *)
+(* exclusive with offset-based operations.                                  TBD *)
+
+    while (paramCount() >= 1) and (paramStr(1)[1] in ['+', '-']) do
+      try
+        hasOptions := true;
+        if (paramStr(1) = '--') or (paramStr(1) = '-') then
+          break;
+        case paramStr(1, lc) of
+          '--trimtopause':  optionTrimToPause := true;
+          '--trimtochange': optionTrimToChange := true
+
+        otherwise
+          WriteLn(ErrOutput);
+          WriteLn(ErrOutput, 'Unknown option ', paramStr(1));
+          helpMe;
+          Halt(1)
+        end
+      finally
+        paramDel(1)
+      end;
+    if hasOptions then begin
+      Write('Options:');
+      if optionTrimToPause then
+        Write(' --TrimToPause');
+      if optionTrimToChange then
+        Write(' --TrimToChange');
+
+      WriteLn
+    end;
+
+(* Recognise and delete a parameter naming an input file.                       *)
+
+    if not openInput(paramStr(1)) then begin
+      WriteLn(ErrOutput);
+      WriteLn(ErrOutput, 'Unable to open input file ', paramStr(1));
+      helpMe;
+      Halt(1)
+    end;
+    try
+      Write('Input: ', paramStr(1));
+{$if declared(FormatDateTime) }
+      WriteLn(' (', FormatDateTime('YYYY-MM-DD hh:mm:ss', FileDateToDateTime(FileAge(paramStr(1)))), ')');
+{$else }
+      WriteLn;
+{$endif }
+      paramDel(1);
+
+(* Recognise and delete an optional parameter naming a binary output file. This *)
+(* does not start with a command character (see below).                     TBD *)
+
+      if (paramCount() >= 1) and not (paramStr(1)[1] in ['+', '-', '=', '@']) then begin
+        if not openOutput(paramStr(1)) then begin
+          WriteLn(ErrOutput);
+          WriteLn(ErrOutput, 'Unable to open output file ', paramStr(1));
+//          helpMe;
+          Halt(1)
+        end;
+        WriteLn('Output: ', paramStr(1));
+        paramDel(1)
+      end;
+
+(* The remaining parameters are commands to be applied to locations identified  *)
+(* by offset in the file.
+
+@<num>  Continue to this point in the input file. These must be in numerical order.
+-<num>  Delete the indicated number of bytes.
++<bytes etc.> Insert the indicated bytes or stitch locations etc.
+=<bytes etc.> Overwrite the indicated bytes or stitch locations etc.
+=+      Increment a byte or stitch location etc.
+=-      Decrement a byte or stitch location etc.
+
+The actual data manipulation is done at the point where the input file is read,
+(look for  function readU8(  etc.) since this has available to it (a) the input
+file position (b) the current rule and (c) implicit indication of data type by
+virtue of the function parameters.                                          TBD *)
+
+      while (paramCount() >= 1) and (paramStr(1)[1] in ['+', '-', '=', '@']) do
+        try
+          hasCommands := true;
+        finally
+        end;
+      if hasCommands then begin
+        Write('Commands:');
+        WriteLn
+      end;
 
 (* A file should now be available on standard input. Parse it, summarise the    *)
 (* termination condition, and summarise the counters monitoring stitches,       *)
 (* embedded commands and so on.                                                 *)
 
-  ruleStack := TStringList.Create;
-  try
-    try
-      if pes_file() or pec_file() then begin
-        summarise(true);                (* File parsed OK, rule stack empty     *)
-        counters
-      end else begin
-        WriteLn('Unable to parse PES file');
-        summarise(false)                (* Parse error, look at rule stack      *)
+{$if declared(AddChar) }
+      WriteLn(AddChar('=', '', Length(banner)));
+{$else }
+      WriteLn(banner);
+{$endif }
+      ruleStack := TStringList.Create;
+      try
+        try
+          if pes_file() or pec_file() then begin
+            summarise(true);            (* File parsed OK, rule stack empty     *)
+            counters
+          end else begin
+            WriteLn('Unable to parse PES or PEC file');
+            summarise(false)            (* Parse error, look at rule stack      *)
+          end
+        except
+          on e: Exception do
+            summarise(e.message)        (* Unexpected EOF etc., look at rule stack *)
+        end
+      finally
+        ruleStack.Free
       end
-    except
-      on e: Exception do
-        summarise(e.message)            (* Unexpected EOF etc., look at rule stack *)
+    finally
+      if not (hasOptions or hasCommands) then
+        if TFileRec(pesOut).Handle > notOpen then
+          if FileSize(pesOut) <> FileSize(pesIn) then begin
+            WriteLn('#');
+            WriteLn('# WARNING: Output file should be the same size as input file');
+            WriteLn('#')
+          end;
+      CloseFile(pesIn);
+      if TFileRec(pesOut).Handle > notOpen then
+        CloseFile(pesOut)
     end
   finally
-    ruleStack.Free
+    FreeAndNil(params)
   end
 end { PesDump }.
 
