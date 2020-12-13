@@ -10,11 +10,11 @@ because it contained pause commands but the ability to compare a troublesome
 file against a good one would have been useful.
 
 It is written in the style of a conventional "recursive descent" parser,
-without lookahead, and is intentionally naive to allow it to be read and
-possibly modified by non-specialists. Assume that like most Pascal programs
-the highest-level elements (i.e. the description of the overall file, the
-description of the standard header etc.) are at the bottom of this program
-unit.  Copyright (c) 2020 Mark Morgan Lloyd
+without lookahead but with limited backtracking, and is intentionally naive
+to allow it to be read and possibly modified by non-specialists. Assume that
+like most Pascal programs the highest-level elements (i.e. the description
+of the overall file, the description of the standard header etc.) are at the
+bottom of this program unit.  Copyright (c) 2020 Mark Morgan Lloyd
 
 The principal reference for factual information used while writing this
 program was from EduTechWiki which is subject to the CC BY-NC-SA Licence.
