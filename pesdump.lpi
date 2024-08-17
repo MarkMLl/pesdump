@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CONFIG>
   <ProjectOptions>
-    <Version Value="11"/>
+    <Version Value="12"/>
     <General>
       <Flags>
         <MainUnitHasCreateFormStatements Value="False"/>
         <MainUnitHasTitleStatement Value="False"/>
+        <CompatibilityMode Value="True"/>
       </Flags>
       <SessionStorage Value="InProjectDir"/>
-      <MainUnit Value="0"/>
       <Title Value="pesdump"/>
       <UseAppBundle Value="False"/>
       <ResourceType Value="res"/>
@@ -24,23 +24,33 @@
     </PublishOptions>
     <RunParams>
       <local>
-        <CommandLineParams Value="../sampler.pes sampler.out"/>
+        <CommandLineParams Value="../sampler.pes sampler.out @0x0ad28 -1 @0x0ad48 =0x20 @0x0aefa -3 @0x10469 { @0x1046b { @0x1213e {"/>
       </local>
       <FormatVersion Value="2"/>
       <Modes Count="1">
         <Mode0 Name="default">
           <local>
-            <CommandLineParams Value="../sampler.pes sampler.out"/>
+            <CommandLineParams Value="../sampler.pes sampler.out @0x0ad28 -1 @0x0ad48 =0x20 @0x0aefa -3 @0x10469 { @0x1046b { @0x1213e {"/>
           </local>
         </Mode0>
       </Modes>
     </RunParams>
-    <Units Count="1">
+    <Units Count="3">
       <Unit0>
         <Filename Value="pesdump.lpr"/>
         <IsPartOfProject Value="True"/>
         <UnitName Value="PesDump"/>
       </Unit0>
+      <Unit1>
+        <Filename Value="patchandio.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="PatchAndIO"/>
+      </Unit1>
+      <Unit2>
+        <Filename Value="midlevelio.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="MidlevelIO"/>
+      </Unit2>
     </Units>
   </ProjectOptions>
   <CompilerOptions>
@@ -61,9 +71,13 @@
       <SmartLinkUnit Value="True"/>
     </CodeGeneration>
     <Linking>
+      <Debugging>
+        <DebugInfoType Value="dsDwarf2Set"/>
+      </Debugging>
       <LinkSmart Value="True"/>
     </Linking>
     <Other>
+      <CustomOptions Value="-dERROR2"/>
       <ExecuteAfter>
         <Command Value="date"/>
         <CompileReasons Run="False"/>
