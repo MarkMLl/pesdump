@@ -16,6 +16,13 @@ like most Pascal programs the highest-level elements (i.e. the description
 of the overall file, the description of the standard header etc.) are at the
 bottom of this program unit.  Copyright (c) 2020 Mark Morgan Lloyd
 
+Under normal circumstances I'd suggest using the Lazarus IDE to compile this
+code via the .lpi (Lazarus Project Information) file, but it should also be
+possible to use FPC (Florian's/Free Pascal Compiler) to compile the .lpr
+(Lazarus Project) file with no special options. This was originally written
+for FPC 3.0 (hopefully in a way that made it compatible with v2.6) but as of
+mid-2024 it has been tested with FPC 3.2.
+
 The principal reference for factual information used while writing this
 program was from EduTechWiki which is subject to the CC BY-NC-SA Licence.
 The above document cites Trevor Adams's "Frno7's Wiki" as its major source,
