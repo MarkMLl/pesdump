@@ -973,7 +973,7 @@ const
 var
   patchLoc: longint;
   bitmap: TScalarArray;
-  i, r: integer;
+  i: integer;
 
 begin
 {$ifdef HAS_CURRENTROUTINE }
