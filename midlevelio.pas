@@ -336,13 +336,24 @@ var
   *)
   function byteToStr(b: byte; bits: integer): string;
 
+{$define MONOSPACED_RELIABLE }
+
+  const
+{$ifdef MONOSPACED_RELIABLE }
+    mark= Dot;
+    space= ' ';
+{$else                      }
+    mark= '1';
+    space= '0';
+{$endif MONOSPACED_RELIABLE }
+
   begin
     result := '';
     while bits > 0 do begin
       if Odd(b) then
-        result += Dot  (* '1' *)
+        result += mark
       else
-        result += ' ';  (* '0' *)
+        result += space;
       b := b >> 1;
       bits -= 1
     end
