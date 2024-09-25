@@ -666,7 +666,7 @@ const
 
 var
   backtrack: int64;
-  i, v: integer;
+  v: integer;
 
 begin
 {$ifdef HAS_CURRENTROUTINE }
@@ -728,7 +728,7 @@ const
 
 var
   backtrack: int64;
-  i, t, v, x, y: integer;
+  i, t, v: integer;
 {$ifdef FPC }
   stitch: TScalarArray;
 {$endif FPC }
@@ -1297,7 +1297,6 @@ function pes_file(): boolean;
 
 var
   backtrack: int64;
-  currentRoutine: ansistring;
 
 begin
 {$ifdef HAS_CURRENTROUTINE }

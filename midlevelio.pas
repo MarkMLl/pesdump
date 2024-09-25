@@ -340,9 +340,9 @@ var
     result := '';
     while bits > 0 do begin
       if Odd(b) then
-        result += '1'
+        result += Dot  (* '1' *)
       else
-        result += '0';
+        result += ' ';  (* '0' *)
       b := b >> 1;
       bits -= 1
     end
@@ -973,7 +973,7 @@ const
 var
   patchLoc: longint;
   bitmap: TScalarArray;
-  i, r: integer;
+  i: integer;
 
 begin
 {$ifdef HAS_CURRENTROUTINE }
